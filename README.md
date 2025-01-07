@@ -1,0 +1,1 @@
+telegram notificator for instatus alerts

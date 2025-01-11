@@ -3,10 +3,11 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"errors"
+	"strings"
 
 	"os"
 	"time"
@@ -68,18 +69,36 @@ func handleWebHook(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	fmt.Fprintf(w, incident.Incident.Name);
-
+	fmt.Fprintf(w, incident.Incident.Name)
 
 	chatIds := getChatIds()
 
 	for i := 0; i < len(chatIds); i++ {
 		chatId := chatIds[i]
-		_, err := b.SendMessage(int64(chatId), incident.Incident.Name, nil)
+		_, err := b.SendMessage(
+			int64(chatId),
+			formatIncidentMessage(incident),
+			&gotgbot.SendMessageOpts{
+				ParseMode: "Markdown",
+			},
+		)
 		if err != nil {
 			return
 		}
 	}
+}
+
+func formatIncidentMessage(incident incidentAdded) string {
+	var message strings.Builder
+
+	message.WriteString(fmt.Sprintf("🚨 *New Incident*: %s\n", incident.Incident.Name))
+	message.WriteString(fmt.Sprintf("*Status*: %s\n", incident.Incident.Status))
+	message.WriteString(fmt.Sprintf("*Impact*: %s\n", incident.Incident.Impact))
+	message.WriteString(fmt.Sprintf("*Created*: %s\n", incident.Incident.CreatedAt))
+
+	message.WriteString(fmt.Sprintf("\n🔗 [View Details](%s)", incident.Incident.URL))
+
+	return message.String()
 }
 
 func main() {
@@ -99,9 +118,9 @@ func main() {
 	}
 
 	database, err := initDB()
-    if err != nil {
-        log.Fatalf("Failed to initialize database: %v", err)
-    }
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 
 	db = database
 
@@ -150,7 +169,7 @@ func start(b *gotgbot.Bot, ctx *ext.Context) error {
 
 	var existingChatID int64
 	err := db.QueryRow("SELECT chatId FROM users WHERE chatId = ?", chatID).Scan(&existingChatID)
-	
+
 	switch {
 	case err == nil:
 		if _, err := ctx.EffectiveMessage.Reply(b, "Currently you are watching", nil); err != nil {
@@ -160,11 +179,11 @@ func start(b *gotgbot.Bot, ctx *ext.Context) error {
 		if _, err := db.Exec("INSERT INTO users (username, chatId) VALUES(?, ?)", username, chatID); err != nil {
 			return fmt.Errorf("failed to insert user: %w", err)
 		}
-		
+
 		if _, err := ctx.EffectiveMessage.Reply(b, "You are now watching", nil); err != nil {
 			return fmt.Errorf("failed to send message: %w", err)
 		}
-		
+
 		log.Printf("New user registered - username: %s, chatID: %d", username, chatID)
 	default:
 		return fmt.Errorf("database error: %w", err)
@@ -189,19 +208,19 @@ func connectToDB() (*sql.DB, error) {
 }
 
 func getChatIds() []int {
-	db, err := connectToDB();
+	db, err := connectToDB()
 	if err != nil {
 		log.Fatalln("failed to connect to db: " + err.Error())
 	}
-	query := "SELECT chatId from users";
+	query := "SELECT chatId from users"
 
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil
 	}
-	defer rows.Close();
+	defer rows.Close()
 
-	var ids []int;
+	var ids []int
 
 	for rows.Next() {
 		var chatID int
@@ -213,18 +232,18 @@ func getChatIds() []int {
 		fmt.Println(chatID)
 	}
 
-	return ids;
+	return ids
 }
 
 func initDB() (*sql.DB, error) {
-    db, err := connectToDB()
-    if err != nil {
-        return nil, err
-    }
-    
-    db.SetMaxOpenConns(25)
-    db.SetMaxIdleConns(25)
-    db.SetConnMaxLifetime(5 * time.Minute)
-    
-    return db, nil
+	db, err := connectToDB()
+	if err != nil {
+		return nil, err
+	}
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	return db, nil
 }

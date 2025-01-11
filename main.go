@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"errors"
 
 	"os"
 	"time"
@@ -52,6 +53,7 @@ type incidentAdded struct {
 }
 
 var b *gotgbot.Bot
+var db *sql.DB
 
 func handleWebHook(w http.ResponseWriter, req *http.Request) {
 	decoder := json.NewDecoder(req.Body)
@@ -67,6 +69,17 @@ func handleWebHook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	fmt.Fprintf(w, incident.Incident.Name);
+
+
+	chatIds := getChatIds()
+
+	for i := 0; i < len(chatIds); i++ {
+		chatId := chatIds[i]
+		_, err := b.SendMessage(int64(chatId), incident.Incident.Name, nil)
+		if err != nil {
+			return
+		}
+	}
 }
 
 func main() {
@@ -84,6 +97,13 @@ func main() {
 	if err != nil {
 		log.Fatalln("failed to create new bot: " + err.Error())
 	}
+
+	database, err := initDB()
+    if err != nil {
+        log.Fatalf("Failed to initialize database: %v", err)
+    }
+
+	db = database
 
 	go func() {
 		http.HandleFunc("/", handleWebHook)
@@ -125,23 +145,30 @@ func main() {
 }
 
 func start(b *gotgbot.Bot, ctx *ext.Context) error {
-	db, err := connectToDB();
-	if err != nil {
-		log.Fatalln("failed to connect to db: " + err.Error())
+	chatID := ctx.EffectiveChat.Id
+	username := ctx.EffectiveChat.Username
+
+	var existingChatID int64
+	err := db.QueryRow("SELECT chatId FROM users WHERE chatId = ?", chatID).Scan(&existingChatID)
+	
+	switch {
+	case err == nil:
+		if _, err := ctx.EffectiveMessage.Reply(b, "Currently you are watching", nil); err != nil {
+			return fmt.Errorf("failed to send message: %w", err)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := db.Exec("INSERT INTO users (username, chatId) VALUES(?, ?)", username, chatID); err != nil {
+			return fmt.Errorf("failed to insert user: %w", err)
+		}
+		
+		if _, err := ctx.EffectiveMessage.Reply(b, "You are now watching", nil); err != nil {
+			return fmt.Errorf("failed to send message: %w", err)
+		}
+		
+		log.Printf("New user registered - username: %s, chatID: %d", username, chatID)
+	default:
+		return fmt.Errorf("database error: %w", err)
 	}
-	query := "SELECT chatId from users";
-
-	rows, err := db.Query(query)
-	if err != nil {
-		return logError(err)
-	}
-	defer rows.Close();
-
-	chatId := ctx.EffectiveChat.Id
-	userName := ctx.EffectiveChat.Username
-
-	fmt.Println(chatId);
-	fmt.Println(userName);
 
 	return nil
 }
@@ -150,18 +177,54 @@ func connectToDB() (*sql.DB, error) {
 	dsn := "root:@tcp(localhost:3306)/tg_instatus"
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, logError(err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	defer db.Close()
 
 	if err := db.Ping(); err != nil {
-		return nil, logError(err)
+		db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return db, nil
 }
 
-func logError(err error) error {
-	log.Println(err.Error())
-	return err
+func getChatIds() []int {
+	db, err := connectToDB();
+	if err != nil {
+		log.Fatalln("failed to connect to db: " + err.Error())
+	}
+	query := "SELECT chatId from users";
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close();
+
+	var ids []int;
+
+	for rows.Next() {
+		var chatID int
+		if err := rows.Scan(&chatID); err != nil {
+			log.Println(err.Error())
+			continue
+		}
+		ids = append(ids, chatID)
+		fmt.Println(chatID)
+	}
+
+	return ids;
+}
+
+func initDB() (*sql.DB, error) {
+    db, err := connectToDB()
+    if err != nil {
+        return nil, err
+    }
+    
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(25)
+    db.SetConnMaxLifetime(5 * time.Minute)
+    
+    return db, nil
 }

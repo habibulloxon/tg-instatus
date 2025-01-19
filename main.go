@@ -146,6 +146,8 @@ func main() {
 	updater := ext.NewUpdater(dispatcher, nil)
 
 	dispatcher.AddHandler(handlers.NewCommand("start", start))
+	dispatcher.AddHandler(handlers.NewCommand("subscribe", subscribe))
+	dispatcher.AddHandler(handlers.NewCommand("unsubscribe", unsubscribe))
 
 	err = updater.StartPolling(b, &ext.PollingOpts{
 		DropPendingUpdates: true,
@@ -165,6 +167,15 @@ func main() {
 
 func start(b *gotgbot.Bot, ctx *ext.Context) error {
 	chatID := ctx.EffectiveChat.Id
+	_, err := b.SendMessage(chatID, "Use /subscribe to subscribe and /unsubscribe to unsubscribe from incident notifications.", nil);
+	if err != nil {
+		return fmt.Errorf("failed to handle start command: %w", err)
+	}
+	return nil
+}
+
+func subscribe(b *gotgbot.Bot, ctx *ext.Context) error {
+	chatID := ctx.EffectiveChat.Id
 	username := ctx.EffectiveChat.Username
 
 	var existingChatID int64
@@ -172,7 +183,7 @@ func start(b *gotgbot.Bot, ctx *ext.Context) error {
 
 	switch {
 	case err == nil:
-		if _, err := ctx.EffectiveMessage.Reply(b, "Currently you are watching", nil); err != nil {
+		if _, err := ctx.EffectiveMessage.Reply(b, "You are already subscribed", nil); err != nil {
 			return fmt.Errorf("failed to send message: %w", err)
 		}
 	case errors.Is(err, sql.ErrNoRows):
@@ -180,7 +191,7 @@ func start(b *gotgbot.Bot, ctx *ext.Context) error {
 			return fmt.Errorf("failed to insert user: %w", err)
 		}
 
-		if _, err := ctx.EffectiveMessage.Reply(b, "You are now watching", nil); err != nil {
+		if _, err := ctx.EffectiveMessage.Reply(b, "You are now subscribed", nil); err != nil {
 			return fmt.Errorf("failed to send message: %w", err)
 		}
 
@@ -190,6 +201,34 @@ func start(b *gotgbot.Bot, ctx *ext.Context) error {
 	}
 
 	return nil
+}
+
+func unsubscribe(b *gotgbot.Bot, ctx *ext.Context) error {
+    chatID := ctx.EffectiveChat.Id
+    
+    var count int
+    err := db.QueryRow("SELECT COUNT(chatId) FROM users WHERE chatId = ?", chatID).Scan(&count)
+    if err != nil {
+        return fmt.Errorf("failed to get count: %w", err)
+    }
+    
+    if count == 0 {
+        if _, err := ctx.EffectiveMessage.Reply(b, "Please subscribe first by clicking /subscribe", nil); err != nil {
+            return fmt.Errorf("failed to send message: %w", err)
+        }
+        return nil
+    }
+    
+    _, err = db.Exec("DELETE FROM users where chatId = ?", chatID)
+    if err != nil {
+        return fmt.Errorf("failed to delete user: %w", err)
+    }
+    
+    if _, err := ctx.EffectiveMessage.Reply(b, "Unsubscribed!", nil); err != nil {
+        return fmt.Errorf("failed to send message: %w", err)
+    }
+    
+    return nil
 }
 
 func connectToDB() (*sql.DB, error) {
